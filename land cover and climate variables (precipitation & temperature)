@@ -1,0 +1,127 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import pearsonr
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from sklearn.linear_model import LinearRegression
+
+# Load land cover and climate data
+# Replace 'land_cover_data.csv' and 'climate_data.csv' with the actual file paths
+land_cover_data = pd.read_csv('land_cover_data.csv')  # CORINE land cover data
+climate_data = pd.read_csv('climate_data.csv')        # Meteorological data from Düzce
+
+# Check the data to ensure it loaded correctly
+print(land_cover_data.head())
+print(climate_data.head())
+
+# Aggregate land cover data by categories
+land_cover_data['Category'] = land_cover_data['Code'].map({
+    112: 'Urban', 121: 'Urban',
+    311: 'Forest', 312: 'Forest',
+    # Add other relevant mappings for agricultural, wetland, etc.
+})
+
+# Sum area by category and year
+land_cover_summary = land_cover_data.groupby(['Year', 'Category'])['Area'].sum().unstack()
+print(land_cover_summary.head())
+
+# Fill missing values in climate data using linear interpolation
+climate_data = climate_data.interpolate(method='linear')
+print(climate_data.isna().sum())  # Check if any NaNs remain
+
+# Normalize variables for consistent comparison
+climate_data['AirTemp'] = (climate_data['AirTemp'] - climate_data['AirTemp'].mean()) / climate_data['AirTemp'].std()
+climate_data['SoilTemp'] = (climate_data['SoilTemp'] - climate_data['SoilTemp'].mean()) / climate_data['SoilTemp'].std()
+climate_data['Precipitation'] = (climate_data['Precipitation'] - climate_data['Precipitation'].mean()) / climate_data['Precipitation'].std()
+
+
+# Plot land cover trends
+land_cover_summary.plot(kind='line', figsize=(10, 6))
+plt.title('Land Cover Trends Over Time')
+plt.xlabel('Year')
+plt.ylabel('Area (Hectares)')
+plt.legend(title='Land Cover Type')
+plt.show()
+
+# Plot climate trends
+climate_data.set_index('Year')[['AirTemp', 'SoilTemp', 'Precipitation']].plot(kind='line', figsize=(10, 6))
+plt.title('Climate Trends Over Time')
+plt.xlabel('Year')
+plt.ylabel('Normalized Values')
+plt.legend(title='Climate Variables')
+plt.show()
+
+# Calculate correlations between each land cover category and climate variables
+correlations = {}
+for category in land_cover_summary.columns:
+    for variable in ['AirTemp', 'SoilTemp', 'Precipitation']:
+        corr, _ = pearsonr(land_cover_summary[category], climate_data[variable])
+        correlations[(category, variable)] = corr
+
+# Display correlations as a DataFrame for clarity
+correlation_df = pd.DataFrame(correlations, index=['Correlation']).T
+print(correlation_df)
+
+# Set the forecast horizon (e.g., 10 years)
+forecast_horizon = 10
+years = climate_data['Year'].values
+future_years = list(range(years[-1] + 1, years[-1] + 1 + forecast_horizon))
+
+# Define function for Holt’s Exponential Smoothing
+def forecast_series(series, forecast_horizon):
+    model = ExponentialSmoothing(series, trend="add", seasonal=None).fit()
+    forecast = model.forecast(forecast_horizon)
+    return forecast
+
+# Generate forecasts for each climate variable
+forecasted_air_temp = forecast_series(climate_data['AirTemp'], forecast_horizon)
+forecasted_soil_temp = forecast_series(climate_data['SoilTemp'], forecast_horizon)
+forecasted_precipitation = forecast_series(climate_data['Precipitation'], forecast_horizon)
+
+# Compile future climate data for regression use
+future_climate_data = pd.DataFrame({
+    'Year': future_years,
+    'AirTemp': forecasted_air_temp,
+    'SoilTemp': forecasted_soil_temp,
+    'Precipitation': forecasted_precipitation
+})
+print(future_climate_data)
+
+
+# Prepare regression model for each land cover type based on climate variables
+land_cover_projections = {}
+
+for category in land_cover_summary.columns:
+    model = LinearRegression()
+    # Extract data matching years
+    X = climate_data[['AirTemp', 'SoilTemp', 'Precipitation']]
+    y = land_cover_summary[category]
+    model.fit(X, y)
+
+    # Predict future land cover areas
+    future_X = future_climate_data[['AirTemp', 'SoilTemp', 'Precipitation']]
+    predictions = model.predict(future_X)
+    land_cover_projections[category] = predictions
+
+# Compile future land cover data into a DataFrame
+future_land_cover = pd.DataFrame(land_cover_projections, index=future_years)
+print(future_land_cover)
+
+
+# Plot projected land cover changes alongside historical data
+plt.figure(figsize=(10, 6))
+for category in land_cover_summary.columns:
+    plt.plot(land_cover_summary.index, land_cover_summary[category], label=f'{category} (Historical)')
+    plt.plot(future_land_cover.index, future_land_cover[category], '--', label=f'{category} (Forecast)')
+
+plt.title('Projected Land Cover Changes in Düzce')
+plt.xlabel('Year')
+plt.ylabel('Area (Hectares)')
+plt.legend()
+plt.show()
+
+
+# Save the projected land cover and climate data to CSV files if needed
+future_climate_data.to_csv('future_climate_data.csv', index=False)
+future_land_cover.to_csv('future_land_cover_data.csv')
